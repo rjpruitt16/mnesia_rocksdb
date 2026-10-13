@@ -402,8 +402,10 @@ get_aliases() ->
     [{rocksdb_copies, []}].
 
 default_opts() ->
-    %% TODO: make this configurable
-    [].
+    %% Options for every alias's admin db, set with
+    %% `{mnesia_rocksdb, [{rocksdb_opts, [...]}]}'. The column family options
+    %% among them also apply to each column family when the db is reopened.
+    application:get_env(mnesia_rocksdb, rocksdb_opts, []).
 
 alias_opts(Alias) ->
     %% TODO: User should have a way to configure rocksdb options for the admin db
@@ -587,7 +589,7 @@ handle_req(Alias, {clear_table, Name}, Backend, #st{} = St) ->
               , cf_handle := CfH} = Cf} ->
             CfName = tab_to_cf_name(Name),
             ok = rocksdb:drop_column_family(DbRef, CfH),
-            {ok, CfH1} = rocksdb:create_column_family(DbRef, CfName, cfopts(rocksdb_opts_from_trec(Cf))),
+            {ok, CfH1} = rocksdb:create_column_family(DbRef, CfName, table_cfopts(Cf)),
             ok = rocksdb:destroy_column_family(DbRef, CfH),
             Cf1 = Cf#{cf_handle := CfH1},
             St1 = update_cf(Alias, Name, Cf1, St),
@@ -1336,7 +1338,7 @@ rocksdb_opts_from_trec(TRec) ->
 
 create_table_as_cf(Alias, Name, #{db_ref := DbRef} = R, St) ->
     CfName = tab_to_cf_name(Name),
-    case create_column_family(DbRef, CfName, cfopts(rocksdb_opts_from_trec(R)), R) of
+    case create_column_family(DbRef, CfName, table_cfopts(R), R) of
         {ok, CfH} ->
             R1 = check_version_and_encoding(R#{ cf_handle => CfH
                                               , type => column_family }),
@@ -1506,7 +1508,12 @@ open_db_(MP, Alias, Opts, CFs0, CreateIfMissing) ->
         true ->
             %% Assumption: even an old rocksdb database file will have at least "default"
             {ok,CFs} = rocksdb:list_column_families(MP, Opts),
-            CFs1 = [{CF,[]} || CF <- CFs], %% TODO: this really needs more checking
+            %% Per-table options live in the db being opened, so they can't be
+            %% read yet. Reopen every column family with the db's options
+            %% instead of RocksDB's defaults, which would otherwise replace
+            %% whatever the column family was created with (for example a
+            %% 64MB write buffer instead of a configured smaller one).
+            CFs1 = [{CF, cfopts(Opts)} || CF <- CFs],
             map_cfs(rocksdb_open(MP, Opts, CFs1), CFs1, Alias, Acc0)
     end.
 
@@ -1556,6 +1563,11 @@ remove_admin_db(Alias, #st{backends = Bs} = St) ->
 cfs(CFs, Opts) ->
     CfOpts = cfopts(Opts),
     [{"default", CfOpts}] ++ lists:flatmap(fun(Tab) -> admin_cfs(Tab, CfOpts) end, CFs).
+
+%% A table's own rocksdb_opts override the configured defaults, so a new
+%% column family starts with the same options it will be reopened with.
+table_cfopts(TRec) ->
+    cfopts(default_opts() ++ rocksdb_opts_from_trec(TRec)).
 
 cfopts(Opts) ->
     filter_opts([{merge_operator, erlang_merge_operator}], Opts, rdb_type_extractor:cf_opts_allowed()).

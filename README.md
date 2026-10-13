@@ -88,6 +88,26 @@ mnesia:create_table(foo, [{rocksdb_copies, [node()]},
                           }])
 ```
 
+Options for every table can also be set in the application environment.
+They apply to the database itself and to each table's column family, both
+when it is created and every time the database is reopened:
+
+```erlang
+{mnesia_rocksdb, [{rocksdb_opts, [{write_buffer_size, 8388608},
+                                  {max_write_buffer_number, 2}]}]}
+```
+
+A table's own `rocksdb_opts` override these when its column family is
+created. When an existing database is reopened, the per-table options can't
+be read yet (they are stored in that database), so every column family is
+reopened with the application-level options.
+
+This matters for memory: column families reopened without options get
+RocksDB's defaults (a 64MB write buffer), and because tables are opened as an
+optimistic transaction db, RocksDB also keeps up to
+`max_write_buffer_number * write_buffer_size` of flushed memtables per
+column family for conflict checking.
+
 Consult the [RocksDB documentation](https://github.com/facebook/rocksdb/wiki/Setup-Options-and-Basic-Tuning)
 for information on configuration parameters. Also see the section below on handling write errors.
 
